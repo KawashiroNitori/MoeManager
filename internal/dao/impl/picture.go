@@ -2,22 +2,33 @@ package impl
 
 import (
 	"context"
+	"database/sql"
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/KawashiroNitori/MoeManager/internal/dao"
 	"github.com/KawashiroNitori/MoeManager/internal/ent"
 	"github.com/KawashiroNitori/MoeManager/internal/ent/picture"
-	"github.com/KawashiroNitori/MoeManager/internal/storage"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/KawashiroNitori/MoeManager/internal/macro"
+	"github.com/samber/lo"
+	"github.com/spf13/viper"
+	_ "modernc.org/sqlite"
 )
 
 type PictureDAOImpl struct {
 	db *ent.Client
 }
 
-var DefaultPictureDAO = NewPictureDAO()
+func getSqliteConnectionURL(path string) string {
+	return path + "?_pragma=foreign_keys(1)"
+}
 
 func NewPictureDAO() dao.PictureDAO {
+	db := lo.Must(sql.Open("sqlite", getSqliteConnectionURL(viper.GetString(macro.ConfigKeyDatabasePath))))
+	drv := entsql.OpenDB(dialect.SQLite, db)
+	sqliteDB := ent.NewClient(ent.Driver(drv))
+	lo.Must0(sqliteDB.Schema.Create(context.Background()))
 	return &PictureDAOImpl{
-		db: storage.SqliteDB,
+		db: sqliteDB,
 	}
 }
 
@@ -49,4 +60,8 @@ func (p *PictureDAOImpl) Create(ctx context.Context, pic *ent.Picture) (*ent.Pic
 func (p *PictureDAOImpl) Remove(ctx context.Context, filename string) error {
 	_, err := p.db.Picture.Delete().Where(picture.Filename(filename)).Exec(ctx)
 	return err
+}
+
+func (p *PictureDAOImpl) Close() error {
+	return p.db.Close()
 }

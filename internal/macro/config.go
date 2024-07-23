@@ -22,7 +22,7 @@ const (
 )
 
 var configDefaultMap = map[string]any{
-	ConfigKeyDatabasePath:      "moe_manager.db",
+	ConfigKeyDatabasePath:      "moe_manager1.db",
 	ConfigKeyRenameEnabled:     true,
 	ConfigKeyUpscaleEnabled:    true,
 	ConfigKeyUpscaleFormatArg:  "-f",

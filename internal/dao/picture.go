@@ -11,4 +11,6 @@ type PictureDAO interface {
 
 	Create(ctx context.Context, pic *ent.Picture) (*ent.Picture, error)
 	Remove(ctx context.Context, filename string) error
+
+	Close() error
 }

@@ -16,7 +16,7 @@ import (
 )
 
 type Upscaler interface {
-	Upscale(ctx context.Context, path string, pic *ent.Picture) error
+	Upscale(ctx context.Context, path string, pic *ent.Picture) (*ent.Picture, error)
 }
 
 type upscaler struct {
@@ -39,30 +39,29 @@ func (u *upscaler) findRatio(longSide int) int {
 	return ratioRange[1]
 }
 
-func (u *upscaler) Upscale(ctx context.Context, path string, pic *ent.Picture) error {
+func (u *upscaler) Upscale(ctx context.Context, path string, pic *ent.Picture) (*ent.Picture, error) {
 	if !viper.GetBool(macro.ConfigKeyUpscaleEnabled) {
-		return nil
+		return pic, nil
 	}
 	if !util.IsSupportedExtension(viper.GetStringSlice(macro.ConfigKeyUpscaleExtensions), path) {
-		return nil
+		return pic, nil
 	}
 	if pic.IsUpscaled {
-		return nil
+		return pic, nil
 	}
 	width, height := pic.OriginalWidth, pic.OriginalHeight
 	if width <= 0 || height <= 0 {
-		return fmt.Errorf("invalid picture size: %dx%d", width, height)
+		return pic, fmt.Errorf("invalid picture size: %dx%d", width, height)
 	}
 	longSide := max(width, height)
 	ratio := u.findRatio(longSide)
 	if longSide < viper.GetInt(macro.ConfigKeyUpscaleMinLongSide) || longSide >= viper.GetInt(macro.ConfigKeyUpscaleTargetLongSide) || ratio == 1 {
-		_, err := pic.Update().
+		return pic.Update().
 			SetIsUpscaled(true).
 			SetUpscaledWidth(width).
 			SetUpscaledHeight(height).
 			SetUpscaleRatio(1).
 			Save(ctx)
-		return err
 	}
 	outputPath := filepath.Join(
 		os.TempDir(),
@@ -76,15 +75,20 @@ func (u *upscaler) Upscale(ctx context.Context, path string, pic *ent.Picture) e
 	args = append(args, "-i", path, "-o", outputPath)
 	upscaleCmd := exec.Command(viper.GetString(macro.ConfigKeyUpscalerPath), args...)
 	if err := upscaleCmd.Run(); err != nil {
-		return err
+		return pic, err
 	}
+
+	/*
+		fmt.Println(string(lo.Must(upscaleCmd.CombinedOutput())))
+	*/
 	newFilename := strings.TrimSuffix(pic.Filename, filepath.Ext(pic.Filename)) + "." + viper.GetString(macro.ConfigKeyUpscaleFormat)
 	newPath := filepath.Join(filepath.Dir(path), newFilename)
 	newDigest, err := util.GetDigest(outputPath)
 	if err != nil {
-		return err
+		return pic, err
 	}
 	pic, err = pic.Update().
+		SetFilename(newFilename).
 		SetIsUpscaled(true).
 		SetUpscaledWidth(width * ratio).
 		SetUpscaledHeight(height * ratio).
@@ -92,8 +96,8 @@ func (u *upscaler) Upscale(ctx context.Context, path string, pic *ent.Picture) e
 		SetDigest(newDigest).
 		Save(ctx)
 	if err != nil {
-		return err
+		return pic, err
 	}
 	_ = os.Remove(path)
-	return os.Rename(outputPath, newPath)
+	return pic, util.Copy(outputPath, newPath)
 }

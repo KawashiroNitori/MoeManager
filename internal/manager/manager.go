@@ -9,7 +9,6 @@ import (
 	"github.com/KawashiroNitori/MoeManager/internal/ent/picture"
 	"github.com/KawashiroNitori/MoeManager/internal/macro"
 	"github.com/KawashiroNitori/MoeManager/internal/renamer"
-	"github.com/KawashiroNitori/MoeManager/internal/storage"
 	"github.com/KawashiroNitori/MoeManager/internal/upscaler"
 	"github.com/KawashiroNitori/MoeManager/internal/util"
 	"github.com/KawashiroNitori/MoeManager/internal/watcher"
@@ -21,7 +20,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+type Event struct {
+	fsnotify.Event
+	Time time.Time
+}
 
 type Manager interface {
 	service.Interface
@@ -45,7 +50,7 @@ type manager struct {
 
 func NewManager() Manager {
 	return &manager{
-		pictureDAO: daoImpl.DefaultPictureDAO,
+		pictureDAO: daoImpl.NewPictureDAO(),
 		renamer:    renamer.NewRenamer(),
 		upscaler:   upscaler.NewUpscaler(),
 	}
@@ -71,7 +76,7 @@ func (m *manager) Start(s service.Service) error {
 }
 
 func (m *manager) Run(ctx context.Context) {
-	queue := make(chan fsnotify.Event, 1024)
+	queue := make(chan Event, 1024)
 	go func() {
 		defer close(m.done)
 
@@ -105,7 +110,7 @@ func (m *manager) Run(ctx context.Context) {
 				continue
 			}
 			filename := filepath.Join(includeDir, entry.Name())
-			queue <- fsnotify.Event{Name: filename, Op: fsnotify.Create}
+			queue <- Event{Event: fsnotify.Event{Name: filename, Op: fsnotify.Create}}
 		}
 	}
 
@@ -118,22 +123,25 @@ func (m *manager) Run(ctx context.Context) {
 				return
 			}
 		case err := <-m.watcher.Errors():
-			_ = m.logger.Errorf("watcher error occured: %v", err)
+			if err != nil {
+				_ = m.logger.Errorf("watcher error occured: %v", err)
+			}
 		case event := <-m.watcher.Events():
-			queue <- event
+			queue <- Event{Event: event, Time: time.Now()}
 		}
 	}
 }
 
-func (m *manager) Workflow(ctx context.Context, event fsnotify.Event) error {
+func (m *manager) Workflow(ctx context.Context, event Event) error {
 	if event.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Write) == 0 {
 		return nil
 	}
+	_ = m.logger.Infof(event.String())
 	path, err := filepath.Abs(event.Name)
 	if err != nil {
 		return err
 	}
-	if util.IsDir(path) {
+	if util.IsDir(path) || !util.IsExists(path) {
 		return nil
 	}
 	if event.Op.Has(fsnotify.Remove) {
@@ -142,18 +150,20 @@ func (m *manager) Workflow(ctx context.Context, event fsnotify.Event) error {
 	if !util.IsSupportedExtension(util.GetAllSupportedExtensions(), path) {
 		return nil
 	}
-
-	fileMu, err := filemutex.New(path)
-	if err != nil {
-		return err
+	var fileMu *filemutex.FileMutex
+	for {
+		fileMu, err = filemutex.New(path)
+		if err == nil {
+			break
+		}
 	}
-	defer fileMu.Close()
 	if err := fileMu.RLock(); err != nil {
 		return err
 	}
+	fileMu.Close()
 
 	if event.Op.Has(fsnotify.Create) {
-		if err := m.Create(ctx, path); err != nil {
+		if err := m.Create(ctx, fileMu, path); err != nil {
 			return err
 		}
 	}
@@ -165,13 +175,7 @@ func (m *manager) Workflow(ctx context.Context, event fsnotify.Event) error {
 	return nil
 }
 
-func (m *manager) Create(ctx context.Context, path string) (err error) {
-	/*
-	 * 可能的情况：
-	 * - 文件名与 hash 与数据库相同，不需要处理
-	 * - 文件名已存在但 hash 不一致，更新 hash
-	 * - 文件名不存在，认为是新文件
-	 */
+func (m *manager) Create(ctx context.Context, fileMu *filemutex.FileMutex, path string) (err error) {
 	filename := filepath.Base(path)
 	pic := m.pictureDAO.GetPictureByFilename(ctx, filename)
 	digest, err := util.GetDigest(path)
@@ -179,12 +183,7 @@ func (m *manager) Create(ctx context.Context, path string) (err error) {
 		return err
 	}
 	if pic != nil {
-		if pic.Status == picture.StatusProcessing || pic.Digest == digest {
-			return nil
-		}
-		pic.Digest = digest
-		pic, err = pic.Update().SetDigest(digest).Save(ctx)
-		return err
+		return nil
 	}
 	width, height, _ := util.GetImageSize(path)
 	pic, err = m.pictureDAO.Create(ctx, &ent.Picture{
@@ -208,12 +207,16 @@ func (m *manager) Create(ctx context.Context, path string) (err error) {
 			pic.Status = picture.StatusError
 			pic.ErrorMessage = err.Error()
 		}
-		_, _ = pic.Update().SetStatus(pic.Status).SetErrorMessage(pic.ErrorMessage).Save(ctx)
+		pic, _ = pic.Update().
+			SetStatus(pic.Status).
+			SetErrorMessage(pic.ErrorMessage).
+			Save(ctx)
 	}()
-	if err := m.renamer.Rename(ctx, path, pic); err != nil {
+	if pic, err = m.renamer.Rename(ctx, path, fileMu, pic); err != nil {
 		return err
 	}
-	if err := m.upscaler.Upscale(ctx, path, pic); err != nil {
+	path = filepath.Join(filepath.Dir(path), pic.Filename)
+	if pic, err = m.upscaler.Upscale(ctx, path, pic); err != nil {
 		return err
 	}
 
@@ -265,7 +268,7 @@ func (m *manager) Stop(s service.Service) error {
 	close(m.stop)
 	<-m.done
 
-	lo.Must0(storage.SqliteDB.Close())
+	lo.Must0(m.pictureDAO.Close())
 	m.stopped = true
 
 	return nil

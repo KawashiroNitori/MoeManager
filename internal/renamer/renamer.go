@@ -6,6 +6,7 @@ import (
 	"github.com/KawashiroNitori/MoeManager/internal/ent"
 	"github.com/KawashiroNitori/MoeManager/internal/macro"
 	"github.com/KawashiroNitori/MoeManager/internal/util"
+	"github.com/alexflint/go-filemutex"
 	"github.com/spf13/viper"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ import (
 )
 
 type Renamer interface {
-	Rename(ctx context.Context, path string, pic *ent.Picture) error
+	Rename(ctx context.Context, path string, fileMu *filemutex.FileMutex, pic *ent.Picture) (*ent.Picture, error)
 }
 
 type renamer struct {
@@ -44,17 +45,17 @@ func (r *renamer) getValidFilename(path string, pic *ent.Picture) string {
 	return filename
 }
 
-func (r *renamer) Rename(ctx context.Context, path string, pic *ent.Picture) error {
+func (r *renamer) Rename(ctx context.Context, path string, fileMu *filemutex.FileMutex, pic *ent.Picture) (*ent.Picture, error) {
 	if !viper.GetBool(macro.ConfigKeyRenameEnabled) {
-		return nil
+		return pic, nil
 	}
 	filename := filepath.Base(path)
 	if !util.IsSupportedExtension(viper.GetStringSlice(macro.ConfigKeyRenameExtensions), filename) {
-		return nil
+		return pic, nil
 	}
 	filenameWithoutExt := strings.TrimSuffix(filename, filepath.Ext(filename))
 	if r.validFilenameRe.MatchString(filenameWithoutExt) {
-		return nil
+		return pic, nil
 	}
 	newFilename := r.getValidFilename(path, pic)
 	pic, err := pic.Update().
@@ -62,7 +63,7 @@ func (r *renamer) Rename(ctx context.Context, path string, pic *ent.Picture) err
 		SetOriginalFilename(filename).
 		Save(ctx)
 	if err != nil {
-		return err
+		return pic, err
 	}
-	return os.Rename(path, filepath.Join(filepath.Dir(path), newFilename))
+	return pic, os.Rename(path, filepath.Join(filepath.Dir(path), newFilename))
 }
