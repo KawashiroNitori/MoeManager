@@ -12,6 +12,7 @@ import (
 	"github.com/samber/lo"
 	"github.com/spf13/viper"
 	_ "modernc.org/sqlite"
+	"path/filepath"
 )
 
 type PictureDAOImpl struct {
@@ -33,6 +34,7 @@ func NewPictureDAO() dao.PictureDAO {
 }
 
 func (p *PictureDAOImpl) GetPictureByFilename(ctx context.Context, filename string) *ent.Picture {
+	filename = filepath.Base(filename)
 	pic, _ := p.db.Picture.Query().Where(picture.Filename(filename)).Only(ctx)
 	return pic
 }

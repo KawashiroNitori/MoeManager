@@ -5,6 +5,7 @@ go 1.22.5
 require (
 	entgo.io/ent v0.13.1
 	github.com/alexflint/go-filemutex v1.3.0
+	github.com/deckarep/golang-set/v2 v2.6.0
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/kardianos/service v1.2.2
 	github.com/oov/psd v0.0.0-20220121172623-5db5eafcecbb

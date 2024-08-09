@@ -127,6 +127,10 @@ func (m *manager) Run(ctx context.Context) {
 				_ = m.logger.Errorf("watcher error occured: %v", err)
 			}
 		case event := <-m.watcher.Events():
+			pic := m.pictureDAO.GetPictureByFilename(ctx, event.Name)
+			if pic != nil && pic.Status == picture.StatusProcessing {
+				continue
+			}
 			queue <- Event{Event: event, Time: time.Now()}
 		}
 	}
